@@ -1,6 +1,7 @@
 # SkillSeed
 
 Build contract: [SPEC.md](./SPEC.md).
+How we work: [CONTRIBUTING.md](./CONTRIBUTING.md). `main` stays buildable and testable.
 
 Turn an OpenAPI spec into an installable MCP server, a `SKILL.md`, and directory submission drafts.
 
