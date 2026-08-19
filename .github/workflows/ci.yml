@@ -22,11 +22,18 @@ jobs:
       - name: Check out
         uses: actions/checkout@v4
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
       - name: Verify contract files
         run: |
           set -euo pipefail
           test -f README.md
           test -f SPEC.md
+          test -f BUILD.md
           test -f CONTRIBUTING.md
           test -f scripts/test.sh
           test -x scripts/test.sh
