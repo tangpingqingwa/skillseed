@@ -1,0 +1,46 @@
+openapi: 3.1.0
+info:
+  title: ClipAPI
+  version: 0.1.0
+  description: Minimal in-repo excerpt for SkillSeed load tests. Not a live upstream.
+servers:
+  - url: https://api.clipapi.example
+paths:
+  /v1/transcript:
+    get:
+      operationId: get_transcript
+      summary: Fetch a video transcript
+      description: Return captions for a public video URL.
+      parameters:
+        - name: url
+          in: query
+          required: true
+          description: Public video URL
+          schema:
+            type: string
+            format: uri
+        - name: lang
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Transcript
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [text]
+                properties:
+                  text:
+                    type: string
+        "404":
+          description: No captions
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+security:
+  - bearerAuth: []
