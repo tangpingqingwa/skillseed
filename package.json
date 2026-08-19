@@ -15,10 +15,12 @@
     "test": "tsx --test tests/**/*.test.ts"
   },
   "dependencies": {
-    "@apidevtools/swagger-parser": "^10.1.1"
+    "@apidevtools/swagger-parser": "^10.1.1",
+    "yazl": "^3.3.1"
   },
   "devDependencies": {
     "@types/node": "^22.18.0",
+    "@types/yazl": "^3.3.1",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2"
   }

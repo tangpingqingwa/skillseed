@@ -1,0 +1,279 @@
+import { createWriteStream } from "node:fs";
+import { mkdir, readFile } from "node:fs/promises";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { ZipFile } from "yazl";
+import { loadOpenApi, type OpenApiDocument } from "./load.js";
+import {
+  apiHomepage,
+  apiTitle,
+  selectTools,
+  slugify,
+  type McpTool,
+} from "./tools.js";
+
+export const STUB_TEMPLATE_PATH = fileURLToPath(new URL("./templates/skill.stub.md", import.meta.url));
+
+export type ArtifactFiles = Record<string, string>;
+
+export type EmitOptions = {
+  apiName?: string;
+  homepage?: string;
+  denyGuidance?: string[];
+};
+
+export type GeneratePackInput = {
+  openapiPath: string;
+  out?: string;
+  allowTools?: string[];
+  apiName?: string;
+  homepage?: string;
+  denyGuidance?: string[];
+};
+
+export type GeneratePackResult = {
+  tools: McpTool[];
+  zipPath: string;
+  files: ArtifactFiles;
+  apiName: string;
+};
+
+function escapeCell(value: string): string {
+  return value.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
+}
+
+function requiredList(schema: McpTool["inputSchema"]): string {
+  return Array.isArray(schema.required) ? (schema.required as string[]).join(", ") : "";
+}
+
+function toolsTableRows(tools: McpTool[]): string {
+  if (tools.length === 0) return "| (none) | | |";
+  return tools
+    .map((tool) => `| ${tool.name} | ${escapeCell(tool.description)} | ${requiredList(tool.inputSchema) || "—"} |`)
+    .join("\n");
+}
+
+export async function loadStubTemplate(): Promise<string> {
+  return readFile(STUB_TEMPLATE_PATH, "utf8");
+}
+
+export async function renderStubSkill(tools: McpTool[], options: EmitOptions = {}): Promise<string> {
+  const template = await loadStubTemplate();
+  const apiName = options.apiName?.trim() || "API";
+  const table = `| Tool | Description | Required |\n|---|---|---|\n${toolsTableRows(tools)}`;
+  let body = template;
+  if (options.denyGuidance && options.denyGuidance.length > 0) {
+    const extra = options.denyGuidance.map((line) => `- ${line}`).join("\n");
+    body = body.replace("## When not to use\n\n", `## When not to use\n\n${extra}\n\n`);
+  }
+  return body.replaceAll("{{API_NAME}}", apiName).replaceAll("{{TOOLS_TABLE}}", table);
+}
+
+function dumpYamlScalar(value: unknown): string {
+  if (value === null || value === undefined) return "null";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  const text = String(value);
+  if (text === "" || /[:#\n&*!?>|{}\[\],%@`"']/.test(text) || /^\s/.test(text) || /\s$/.test(text)) {
+    return JSON.stringify(text);
+  }
+  return text;
+}
+
+function dumpYaml(value: unknown, indent = 0, seen = new WeakSet<object>()): string {
+  const pad = "  ".repeat(indent);
+  if (Array.isArray(value)) {
+    if (value.length === 0) return indent === 0 ? "[]" : `${pad}[]`;
+    return value
+      .map((item) => {
+        if (item !== null && typeof item === "object") {
+          const nested = dumpYaml(item, indent + 1, seen);
+          const [first, ...rest] = nested.split("\n");
+          return `${pad}- ${first.trimStart()}${rest.length ? `\n${rest.join("\n")}` : ""}`;
+        }
+        return `${pad}- ${dumpYamlScalar(item)}`;
+      })
+      .join("\n");
+  }
+  if (value !== null && typeof value === "object") {
+    if (seen.has(value)) return indent === 0 ? "null" : `${pad}null`;
+    seen.add(value);
+    const entries = Object.entries(value as Record<string, unknown>).filter(([, child]) => child !== undefined);
+    if (entries.length === 0) return indent === 0 ? "{}" : `${pad}{}`;
+    return entries
+      .map(([key, child]) => {
+        const safeKey = /^[A-Za-z_][A-Za-z0-9._-]*$/.test(key) ? key : JSON.stringify(key);
+        if (child !== null && typeof child === "object") {
+          const nested = dumpYaml(child, indent + 1, seen);
+          if (nested.trim() === "{}" || nested.trim() === "[]") return `${pad}${safeKey}: ${nested.trim()}`;
+          return `${pad}${safeKey}:\n${nested}`;
+        }
+        return `${pad}${safeKey}: ${dumpYamlScalar(child)}`;
+      })
+      .join("\n");
+  }
+  return `${pad}${dumpYamlScalar(value)}`;
+}
+
+export function normalizeOpenApiYaml(api: OpenApiDocument): string {
+  return `${dumpYaml(api)}\n`;
+}
+
+export function mcpServerJson(tools: McpTool[], options: EmitOptions = {}): string {
+  const name = slugify(options.apiName?.trim() || "api");
+  return `${JSON.stringify(
+    {
+      name,
+      description: `${options.apiName?.trim() || "API"} MCP (SkillSeed stub)`,
+      tools: tools.map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+      })),
+    },
+    null,
+    2,
+  )}\n`;
+}
+
+export function mcpIndexJs(tools: McpTool[]): string {
+  const routes = Object.fromEntries(tools.map((tool) => [tool.name, { method: tool.method, path: tool.path }]));
+  return `/* generated by skillseed — thin fetch dispatcher stub */
+const ROUTES = ${JSON.stringify(routes, null, 2)};
+
+export function resolveTool(name) {
+  const route = ROUTES[name];
+  if (!route) throw new Error("unknown tool: " + name);
+  return route;
+}
+
+export async function callTool(name, args = {}, fetchImpl = globalThis.fetch) {
+  const route = resolveTool(name);
+  const path = route.path.replace(/\\{([^}]+)\\}/g, (_, key) => {
+    if (args[key] === undefined || args[key] === null) {
+      throw new Error("missing path param: " + key);
+    }
+    return encodeURIComponent(String(args[key]));
+  });
+  const url = new URL(path, process.env.API_BASE_URL || "http://127.0.0.1");
+  const used = new Set([...route.path.matchAll(/\\{([^}]+)\\}/g)].map((m) => m[1]));
+  if (route.method === "GET" || route.method === "HEAD") {
+    for (const [key, value] of Object.entries(args)) {
+      if (used.has(key) || value === undefined || value === null) continue;
+      url.searchParams.set(key, String(value));
+    }
+  }
+  /** @type {Record<string, string>} */
+  const headers = {};
+  if (process.env.API_BEARER) headers.Authorization = "Bearer " + process.env.API_BEARER;
+  const init = { method: route.method, headers };
+  if (route.method !== "GET" && route.method !== "HEAD") {
+    headers["content-type"] = "application/json";
+    /** @type {Record<string, unknown>} */
+    const body = {};
+    for (const [key, value] of Object.entries(args)) {
+      if (!used.has(key)) body[key] = value;
+    }
+    init.body = JSON.stringify(body);
+  }
+  const res = await fetchImpl(url, init);
+  const text = await res.text();
+  try { return JSON.parse(text); } catch { return text; }
+}
+`;
+}
+
+function llmsTxt(tools: McpTool[], options: EmitOptions = {}): string {
+  const name = options.apiName?.trim() || "API";
+  const lines = [`# ${name}`, "", "MCP tools:"];
+  for (const tool of tools) lines.push(`- ${tool.name}: ${tool.description}`);
+  if (options.homepage?.trim()) {
+    lines.push("", `Homepage: ${options.homepage.trim()}`);
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
+function llmsFullTxt(tools: McpTool[], options: EmitOptions = {}): string {
+  const name = options.apiName?.trim() || "API";
+  const lines = [`# ${name} — endpoints`, "", "| Tool | Method | Path | Required |", "|---|---|---|---|"];
+  for (const tool of tools) {
+    lines.push(`| ${tool.name} | ${tool.method} | ${tool.path} | ${requiredList(tool.inputSchema) || "—"} |`);
+  }
+  lines.push("");
+  return lines.join("\n");
+}
+
+function directoryStub(dir: string, options: EmitOptions = {}): string {
+  const name = (options.apiName?.trim() || "API").slice(0, 40);
+  return `# ${dir} submission checklist
+
+- Suggested name: ${name}
+- One-liner: MCP + skill pack for ${name}
+- Sample prompts: see SKILL.md
+- Install snippet: unzip and point the ${dir} MCP config at mcp/index.js
+- **Human must click submit**
+
+Do not promise listing. Generated stub; edit before use.
+`;
+}
+
+export async function buildArtifacts(
+  api: OpenApiDocument,
+  tools: McpTool[],
+  options: EmitOptions = {},
+): Promise<ArtifactFiles> {
+  const apiName = options.apiName?.trim() || apiTitle(api);
+  const homepage = options.homepage?.trim() || apiHomepage(api);
+  const meta = { ...options, apiName, homepage };
+  return {
+    "openapi.normalized.yaml": normalizeOpenApiYaml(api),
+    "mcp/server.json": mcpServerJson(tools, meta),
+    "mcp/index.js": mcpIndexJs(tools),
+    "SKILL.md": await renderStubSkill(tools, meta),
+    "llms.txt": llmsTxt(tools, meta),
+    "llms-full.txt": llmsFullTxt(tools, meta),
+    "directories/cursor.md": directoryStub("Cursor", meta),
+    "directories/claude.md": directoryStub("Claude", meta),
+    "directories/openclaw.md": directoryStub("OpenClaw", meta),
+    "directories/chatgpt.md": directoryStub("ChatGPT", meta),
+  };
+}
+
+export async function writeZip(files: ArtifactFiles, zipPath: string): Promise<void> {
+  await mkdir(dirname(zipPath), { recursive: true });
+  const zip = new ZipFile();
+  for (const name of Object.keys(files).sort()) {
+    zip.addBuffer(Buffer.from(files[name], "utf8"), name, {
+      mtime: new Date(0),
+      mode: 0o100644,
+      forceDosTimestamp: true,
+    });
+  }
+  zip.end();
+  await new Promise<void>((resolve, reject) => {
+    const out = createWriteStream(zipPath);
+    zip.outputStream.pipe(out);
+    zip.outputStream.on("error", reject);
+    out.on("error", reject);
+    out.on("finish", resolve);
+  });
+}
+
+export async function generatePack(input: GeneratePackInput): Promise<GeneratePackResult> {
+  const loaded = await loadOpenApi(input.openapiPath);
+  const tools = selectTools(loaded.api, { allowTools: input.allowTools });
+  const apiName = input.apiName?.trim() || apiTitle(loaded.api);
+  const files = await buildArtifacts(loaded.api, tools, {
+    apiName,
+    homepage: input.homepage,
+    denyGuidance: input.denyGuidance,
+  });
+  const zipPath = input.out ?? defaultZipPath(apiName);
+  await writeZip(files, zipPath);
+  return { tools, zipPath, files, apiName };
+}
+
+export function defaultZipPath(apiName: string): string {
+  return `dist/${slugify(apiName)}.zip`;
+}
