@@ -1,5 +1,7 @@
 # SkillSeed
 
+Build contract: [SPEC.md](./SPEC.md).
+
 Turn an OpenAPI spec into an installable MCP server, a `SKILL.md`, and directory submission drafts.
 
 Not an agent platform. This is Shimecki’s actual growth lever, productized: TranscriptAPI worked because when OpenClaw shipped, they were first to drop a YouTube MCP and skill into every directory that would have them.
