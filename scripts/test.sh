@@ -54,10 +54,17 @@ if [[ -f package.json ]]; then
   # Quoted so bash 3.2 does not eat **; Node 22's test runner expands the glob.
   npx tsx --test 'tests/**/*.test.ts'
 
-  echo "== fixture is local (no live vendors) =="
+  echo "== fixtures are local (no live vendors) =="
   [[ -f fixtures/clipapi.openapi.yaml ]] || fail "missing fixtures/clipapi.openapi.yaml"
+  [[ -f fixtures/redditapi.openapi.yaml ]] || fail "missing fixtures/redditapi.openapi.yaml"
   grep -qiE 'tiktok\.com|reddit\.com|amazon\.com' fixtures/clipapi.openapi.yaml \
     && fail "clip fixture must not point at live TikTok/Reddit/Amazon"
+  grep -qiE 'tiktok\.com|reddit\.com|amazon\.com' fixtures/redditapi.openapi.yaml \
+    && fail "reddit fixture must not point at live TikTok/Reddit/Amazon"
+  grep -q 'operationId: unroll_thread' fixtures/redditapi.openapi.yaml \
+    || fail "reddit fixture missing unroll_thread"
+  grep -q 'operationId: get_transcript' fixtures/redditapi.openapi.yaml \
+    && fail "reddit fixture must not reuse ClipAPI get_transcript"
 
   echo "== skillseed generate --help =="
   help_out="$(npx --no-install tsx src/cli.ts generate --help)"
@@ -105,6 +112,37 @@ if "{{API_NAME}}" in skill or "{{TOOLS_TABLE}}" in skill:
     raise SystemExit("stub template placeholders left unfilled")
 PY
   rm -rf "$gen_dir"
+
+  echo "== generate reddit fixture zip (offline) =="
+  reddit_dir="$(mktemp -d "${TMPDIR:-/tmp}/skillseed-reddit.XXXXXX")"
+  set +e
+  reddit_out="$(npx --no-install tsx src/cli.ts generate fixtures/redditapi.openapi.yaml --out "$reddit_dir/pack.zip" 2>&1)"
+  reddit_status=$?
+  set -e
+  [[ "$reddit_status" -eq 0 ]] || fail "generate reddit fixture failed: $reddit_out"
+  printf '%s\n' "$reddit_out" | grep -q 'ok: wrote 5 tools' \
+    || fail "generate did not report 5 reddit tools"
+  [[ -f "$reddit_dir/pack.zip" ]] || fail "generate did not write reddit zip"
+  python3 - "$reddit_dir/pack.zip" <<'PY' || fail "reddit zip missing tools or leaked clip ids"
+import sys, zipfile, json
+z = zipfile.ZipFile(sys.argv[1])
+names = set(z.namelist())
+need = {"SKILL.md", "mcp/server.json", "mcp/index.js"}
+missing = need - names
+if missing:
+    raise SystemExit("missing " + ", ".join(sorted(missing)))
+skill = z.read("SKILL.md").decode()
+server = json.loads(z.read("mcp/server.json").decode())
+tool_names = [t["name"] for t in server["tools"]]
+expect = ["get_latest", "get_post", "list_subreddit", "search_reddit", "unroll_thread"]
+if tool_names != expect:
+    raise SystemExit("unexpected tools: " + ",".join(tool_names))
+if "unroll_thread" not in skill or "get_transcript" in skill:
+    raise SystemExit("skill is not the RedditAPI pack")
+if "get_transcript" in z.read("mcp/index.js").decode():
+    raise SystemExit("generated client still mentions get_transcript")
+PY
+  rm -rf "$reddit_dir"
 
   echo "== 9th tool rejected (exit 2) =="
   nine="$(mktemp -d "${TMPDIR:-/tmp}/skillseed-nine.XXXXXX")"

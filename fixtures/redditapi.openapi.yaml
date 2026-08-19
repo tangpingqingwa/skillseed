@@ -1,0 +1,204 @@
+openapi: 3.1.0
+info:
+  title: RedditAPI
+  version: 0.1.0
+  description: Minimal in-repo excerpt for SkillSeed generate tests. Not a live upstream.
+servers:
+  - url: https://api.redditapi.example
+paths:
+  /v1/threads/by-url:
+    get:
+      operationId: unroll_thread
+      summary: Unroll a public Reddit thread
+      description: Return a public post and its expanded comment tree for a permalink URL.
+      parameters:
+        - name: url
+          in: query
+          required: true
+          description: Public permalink URL (fixture uses *.example hosts only)
+          schema:
+            type: string
+            format: uri
+        - name: max_comments
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 500
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [best, new, top, qa]
+            default: best
+      responses:
+        "200":
+          description: Thread tree
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: object
+                    required: [post, comments, commentCount]
+                    properties:
+                      post:
+                        $ref: "#/components/schemas/RedditPost"
+                      comments:
+                        type: array
+                        items:
+                          $ref: "#/components/schemas/RedditComment"
+                      commentCount:
+                        type: integer
+                  meta:
+                    type: object
+                    additionalProperties: true
+        "403":
+          description: Private or quarantined subreddit
+        "404":
+          description: Thread not found
+  /v1/posts/{id}:
+    get:
+      operationId: get_post
+      summary: Fetch a post without comments
+      description: Return a public post by id (`abc123` or `t3_abc123`).
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Post
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    $ref: "#/components/schemas/RedditPost"
+        "404":
+          description: Post not found
+  /v1/r/{sub}/hot:
+    get:
+      operationId: list_subreddit
+      summary: List hot posts in a subreddit
+      description: Return one page of public hot listings for a subreddit.
+      parameters:
+        - name: sub
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+      responses:
+        "200":
+          description: Listing page
+        "403":
+          description: Private subreddit
+  /v1/search:
+    get:
+      operationId: search_reddit
+      summary: Search public posts
+      description: Search public posts, optionally scoped to a subreddit.
+      parameters:
+        - name: q
+          in: query
+          required: true
+          description: Search query
+          schema:
+            type: string
+        - name: sub
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: sort
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: cursor
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Search page
+  /v1/r/{sub}/latest:
+    get:
+      operationId: get_latest
+      summary: Newest posts in a subreddit
+      description: Return the newest public posts for a monitor hook. Zero credits.
+      parameters:
+        - name: sub
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Latest posts
+components:
+  schemas:
+    RedditPost:
+      type: object
+      required: [id, subreddit, title, permalink]
+      properties:
+        id:
+          type: string
+        subreddit:
+          type: string
+        title:
+          type: string
+        author:
+          type: string
+        permalink:
+          type: string
+        url:
+          type: string
+        nsfw:
+          type: boolean
+    RedditComment:
+      type: object
+      required: [id, status, replies]
+      properties:
+        id:
+          type: string
+        author:
+          type: string
+        body:
+          type: string
+        status:
+          type: string
+          enum: [visible, deleted, removed]
+        replies:
+          type: array
+          items:
+            $ref: "#/components/schemas/RedditComment"
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+security:
+  - bearerAuth: []
