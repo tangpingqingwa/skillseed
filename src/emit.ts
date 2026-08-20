@@ -1,9 +1,11 @@
 import { createWriteStream } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ZipFile } from "yazl";
 import { loadOpenApi, type OpenApiDocument } from "./load.js";
+import { createProsePort, formatToolsTable, type ProsePort } from "./prose.js";
+import { assertSkillReview, collectParameterNames } from "./review.js";
 import {
   apiHomepage,
   apiTitle,
@@ -13,6 +15,9 @@ import {
 } from "./tools.js";
 
 export const STUB_TEMPLATE_PATH = fileURLToPath(new URL("./templates/skill.stub.md", import.meta.url));
+export const DIRECTORY_TEMPLATE_DIR = fileURLToPath(new URL("../templates/directories/", import.meta.url));
+
+const DIRECTORY_FILES = ["cursor.md", "claude.md", "openclaw.md", "chatgpt.md"] as const;
 
 export type ArtifactFiles = Record<string, string>;
 
@@ -20,6 +25,8 @@ export type EmitOptions = {
   apiName?: string;
   homepage?: string;
   denyGuidance?: string[];
+  sampleDialogue?: string;
+  prosePort?: ProsePort;
 };
 
 export type GeneratePackInput = {
@@ -29,28 +36,27 @@ export type GeneratePackInput = {
   apiName?: string;
   homepage?: string;
   denyGuidance?: string[];
+  sampleDialogue?: string;
+  prosePort?: ProsePort;
 };
+
+export type SkillSource = "prose" | "stub";
 
 export type GeneratePackResult = {
   tools: McpTool[];
   zipPath: string;
   files: ArtifactFiles;
   apiName: string;
+  skillSource: SkillSource;
 };
-
-function escapeCell(value: string): string {
-  return value.replace(/\|/g, "\\|").replace(/\r?\n/g, " ");
-}
 
 function requiredList(schema: McpTool["inputSchema"]): string {
   return Array.isArray(schema.required) ? (schema.required as string[]).join(", ") : "";
 }
 
-function toolsTableRows(tools: McpTool[]): string {
-  if (tools.length === 0) return "| (none) | | |";
-  return tools
-    .map((tool) => `| ${tool.name} | ${escapeCell(tool.description)} | ${requiredList(tool.inputSchema) || "—"} |`)
-    .join("\n");
+function clip(text: string, max: number): string {
+  if (text.length <= max) return text;
+  return text.slice(0, max);
 }
 
 export async function loadStubTemplate(): Promise<string> {
@@ -60,13 +66,34 @@ export async function loadStubTemplate(): Promise<string> {
 export async function renderStubSkill(tools: McpTool[], options: EmitOptions = {}): Promise<string> {
   const template = await loadStubTemplate();
   const apiName = options.apiName?.trim() || "API";
-  const table = `| Tool | Description | Required |\n|---|---|---|\n${toolsTableRows(tools)}`;
   let body = template;
   if (options.denyGuidance && options.denyGuidance.length > 0) {
     const extra = options.denyGuidance.map((line) => `- ${line}`).join("\n");
     body = body.replace("## When not to use\n\n", `## When not to use\n\n${extra}\n\n`);
   }
-  return body.replaceAll("{{API_NAME}}", apiName).replaceAll("{{TOOLS_TABLE}}", table);
+  return body.replaceAll("{{API_NAME}}", apiName).replaceAll("{{TOOLS_TABLE}}", formatToolsTable(tools));
+}
+
+export async function renderDirectoryDrafts(tools: McpTool[], options: EmitOptions = {}): Promise<ArtifactFiles> {
+  const apiName = options.apiName?.trim() || "API";
+  const suggested = clip(apiName, 40);
+  const oneLiner = clip(`MCP + skill pack for ${apiName}.`, 120);
+  const first = tools[0]?.name;
+  const prompts = [
+    first ? `- Use ${apiName} when the user needs ${first}` : `- Use ${apiName} for the documented happy path`,
+    first ? `- Call only ${first} and report the JSON result` : `- Do not invent tools`,
+  ].join("\n");
+  const install = "Unzip the pack and point the MCP config at mcp/index.js. Set API_BEARER.";
+  const files: ArtifactFiles = {};
+  for (const file of DIRECTORY_FILES) {
+    const template = await readFile(join(DIRECTORY_TEMPLATE_DIR, file), "utf8");
+    files[`directories/${file}`] = template
+      .replaceAll("{{SUGGESTED_NAME}}", suggested)
+      .replaceAll("{{ONE_LINER}}", oneLiner)
+      .replaceAll("{{SAMPLE_PROMPTS}}", prompts)
+      .replaceAll("{{INSTALL_SNIPPET}}", install);
+  }
+  return files;
 }
 
 function dumpYamlScalar(value: unknown): string {
@@ -204,20 +231,6 @@ function llmsFullTxt(tools: McpTool[], options: EmitOptions = {}): string {
   return lines.join("\n");
 }
 
-function directoryStub(dir: string, options: EmitOptions = {}): string {
-  const name = (options.apiName?.trim() || "API").slice(0, 40);
-  return `# ${dir} submission checklist
-
-- Suggested name: ${name}
-- One-liner: MCP + skill pack for ${name}
-- Sample prompts: see SKILL.md
-- Install snippet: unzip and point the ${dir} MCP config at mcp/index.js
-- **Human must click submit**
-
-Do not promise listing. Generated stub; edit before use.
-`;
-}
-
 export async function buildArtifacts(
   api: OpenApiDocument,
   tools: McpTool[],
@@ -233,11 +246,37 @@ export async function buildArtifacts(
     "SKILL.md": await renderStubSkill(tools, meta),
     "llms.txt": llmsTxt(tools, meta),
     "llms-full.txt": llmsFullTxt(tools, meta),
-    "directories/cursor.md": directoryStub("Cursor", meta),
-    "directories/claude.md": directoryStub("Claude", meta),
-    "directories/openclaw.md": directoryStub("OpenClaw", meta),
-    "directories/chatgpt.md": directoryStub("ChatGPT", meta),
+    ...(await renderDirectoryDrafts(tools, meta)),
   };
+}
+
+async function draftReviewedSkill(
+  tools: McpTool[],
+  options: EmitOptions,
+): Promise<{ markdown: string; skillSource: SkillSource }> {
+  const ctx = {
+    apiName: options.apiName?.trim() || "API",
+    homepage: options.homepage?.trim() || "",
+    tools,
+    denyGuidance: options.denyGuidance ?? [],
+    sampleDialogue: options.sampleDialogue,
+  };
+  const port = options.prosePort ?? createProsePort();
+  let markdown: string;
+  let skillSource: SkillSource;
+  try {
+    markdown = await port.draftSkillMarkdown(ctx);
+    skillSource = "prose";
+  } catch {
+    markdown = await renderStubSkill(tools, options);
+    skillSource = "stub";
+  }
+  assertSkillReview({
+    markdown,
+    allowTools: tools.map((tool) => tool.name),
+    parameterNames: collectParameterNames(tools),
+  });
+  return { markdown, skillSource };
 }
 
 export async function writeZip(files: ArtifactFiles, zipPath: string): Promise<void> {
@@ -264,14 +303,20 @@ export async function generatePack(input: GeneratePackInput): Promise<GeneratePa
   const loaded = await loadOpenApi(input.openapiPath);
   const tools = selectTools(loaded.api, { allowTools: input.allowTools });
   const apiName = input.apiName?.trim() || apiTitle(loaded.api);
-  const files = await buildArtifacts(loaded.api, tools, {
+  const homepage = input.homepage?.trim() || apiHomepage(loaded.api);
+  const meta = {
     apiName,
-    homepage: input.homepage,
+    homepage,
     denyGuidance: input.denyGuidance,
-  });
+    sampleDialogue: input.sampleDialogue,
+    prosePort: input.prosePort,
+  };
+  const files = await buildArtifacts(loaded.api, tools, meta);
+  const { markdown, skillSource } = await draftReviewedSkill(tools, meta);
+  files["SKILL.md"] = markdown;
   const zipPath = input.out ?? defaultZipPath(apiName);
   await writeZip(files, zipPath);
-  return { tools, zipPath, files, apiName };
+  return { tools, zipPath, files, apiName, skillSource };
 }
 
 export function defaultZipPath(apiName: string): string {

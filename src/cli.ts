@@ -6,8 +6,10 @@ import { GenerateError } from "./tools.js";
 
 const HELP = `Usage: skillseed generate <openapi.yaml> [options]
 
-Validate an OpenAPI 3.x document and emit a deterministic MCP + stub SKILL zip.
-No LLM is invoked; SKILL.md is filled from the frozen stub template.
+Validate an OpenAPI 3.x document and emit a deterministic MCP + SKILL zip.
+SKILL.md is drafted by ProsePort (offline fake by default). If the LLM fails,
+the zip still ships with a stub skill and intact tool schemas.
+Live prose is opt-in via SKILLSEED_USE_LIVE_PROSE=1 and SKILLSEED_LLM_API_KEY.
 
 Commands:
   generate <openapi.yaml>   Map operations to tools and write a zip
