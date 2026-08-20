@@ -63,6 +63,8 @@ GET  /mcp/:tenant/...      optional hosted MCP
 GET  /docs
 ```
 
+`POST /jobs` creates a **$29** Stripe Checkout session and a job in `awaiting_payment`. Generate does **not** run until payment completes. `GET /jobs/:id` returns status and, when `ready`, artifact links. `GET /jobs/:id/files.zip` is the zip. Tests and CI use a fake Stripe; live Checkout is env-gated (`SKILLSEED_USE_LIVE_STRIPE=1`).
+
 v1 can be CLI-first for us (`skillseed generate ./openapi.yaml`) plus a thin web checkout later.
 
 Launch order: **CLI for dogfood → web generate $29**.
