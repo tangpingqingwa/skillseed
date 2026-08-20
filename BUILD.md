@@ -17,6 +17,7 @@ CLI first. Schema is deterministic from OpenAPI. LLM may write prose only.
 | Zip | `yazl` or `archiver` |
 | LLM | `ProsePort.draftSkillMarkdown(ctx)` — fake adapter in tests |
 | Hosted MCP | later Fastify proxy; not in first three PRs |
+| Web checkout | Fastify + Stripe Checkout $29; `FakeStripePort` in tests |
 | Tests | node:test + ClipAPI/RedditAPI fixture OpenAPI files |
 
 ---

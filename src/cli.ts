@@ -1,10 +1,12 @@
 #!/usr/bin/env -S node --import tsx
 import { pathToFileURL } from "node:url";
+import { createStripePort, isLiveStripeEnabled, LiveStripePort } from "./billing.js";
 import { generatePack } from "./emit.js";
 import { OpenApiLoadError } from "./load.js";
 import { GenerateError } from "./tools.js";
+import { buildApp } from "./web.js";
 
-const HELP = `Usage: skillseed generate <openapi.yaml> [options]
+const HELP = `Usage: skillseed <command> [options]
 
 Validate an OpenAPI 3.x document and emit a deterministic MCP + SKILL zip.
 SKILL.md is drafted by ProsePort (offline fake by default). If the LLM fails,
@@ -13,13 +15,19 @@ Live prose is opt-in via SKILLSEED_USE_LIVE_PROSE=1 and SKILLSEED_LLM_API_KEY.
 
 Commands:
   generate <openapi.yaml>   Map operations to tools and write a zip
+  serve                     Web checkout ($29) + generate job status
 
-Options:
+Generate options:
   --out <path>              Zip path (default: dist/<api-name>.zip)
   --allow-tool <id>         operationId to include (repeatable, max 8)
   --name <apiName>          Override API display name
   --homepage <url>          Override homepage URL
   --deny <text>             Extra "when not to use" line (repeatable)
+
+Serve options:
+  --host <host>             Bind address (default: 127.0.0.1)
+  --port <n>                Listen port (default: 3000)
+
   -h, --help                Show this help
   -v, --version             Print skillseed version
 `;
@@ -31,6 +39,11 @@ type GenerateArgs = {
   apiName?: string;
   homepage?: string;
   denyGuidance?: string[];
+};
+
+type ServeArgs = {
+  host: string;
+  port: number;
 };
 
 function printHelp(): void {
@@ -137,6 +150,40 @@ export function parseGenerateArgs(args: string[]): GenerateArgs {
   };
 }
 
+export function parseServeArgs(args: string[]): ServeArgs {
+  let host = "127.0.0.1";
+  let port = 3000;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--host") {
+      host = takeValue(args, i, "--host");
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--host=")) {
+      host = arg.slice("--host=".length);
+      if (!host) fail("--host requires a value");
+      continue;
+    }
+    if (arg === "--port") {
+      port = Number(takeValue(args, i, "--port"));
+      i += 1;
+      if (!Number.isInteger(port) || port < 0 || port > 65535) fail("--port must be an integer 0-65535");
+      continue;
+    }
+    if (arg.startsWith("--port=")) {
+      port = Number(arg.slice("--port=".length));
+      if (!Number.isInteger(port) || port < 0 || port > 65535) fail("--port must be an integer 0-65535");
+      continue;
+    }
+    if (arg.startsWith("-")) fail(`unknown option: ${arg}`);
+    fail(`unexpected argument: ${arg}`);
+  }
+
+  return { host, port };
+}
+
 export async function run(argv: string[]): Promise<void> {
   const args = argv.slice(2);
 
@@ -151,12 +198,23 @@ export async function run(argv: string[]): Promise<void> {
   }
 
   const [command, ...rest] = args;
-  if (command !== "generate") {
+  if (command !== "generate" && command !== "serve") {
     fail(`unknown command: ${command}\n\n${HELP}`.trimEnd());
   }
 
   if (rest.includes("-h") || rest.includes("--help")) {
     printHelp();
+    return;
+  }
+
+  if (command === "serve") {
+    const parsed = parseServeArgs(rest);
+    const stripe = isLiveStripeEnabled()
+      ? await LiveStripePort.connect(process.env.STRIPE_SECRET_KEY ?? "")
+      : createStripePort();
+    const { app } = await buildApp({ stripe, logger: false });
+    const address = await app.listen({ host: parsed.host, port: parsed.port });
+    process.stdout.write(`ok: listening on ${address}\n`);
     return;
   }
 

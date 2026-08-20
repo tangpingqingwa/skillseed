@@ -6,6 +6,13 @@ How we build: [BUILD.md](./BUILD.md) — stack, modules, tests, PR sequence.
 
 Turn an OpenAPI spec into an installable MCP server, a `SKILL.md`, and directory submission drafts.
 
+```bash
+npx tsx src/cli.ts generate ./openapi.yaml --out pack.zip
+npx tsx src/cli.ts serve --port 3000   # paste OpenAPI, $29 Checkout, download zip
+```
+
+`serve` uses an in-memory fake Stripe unless `SKILLSEED_USE_LIVE_STRIPE=1` and `STRIPE_SECRET_KEY` are set. CI never enables live Stripe.
+
 Not an agent platform. This is Shimecki’s actual growth lever, productized: TranscriptAPI worked because when OpenClaw shipped, they were first to drop a YouTube MCP and skill into every directory that would have them.
 
 English-speaking agent runtimes are the market. The directories are Cursor, Claude, OpenClaw, ChatGPT, not domestic app stores.

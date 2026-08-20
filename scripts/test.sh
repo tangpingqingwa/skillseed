@@ -47,11 +47,14 @@ if [[ -f package.json ]]; then
     fi
   fi
 
-  # Live ProsePort is env-gated and must never run in this script.
+  # Live ProsePort / live Stripe are env-gated and must never run in this script.
   unset SKILLSEED_USE_LIVE_PROSE
   unset SKILLSEED_LLM_API_KEY
   unset SKILLSEED_LLM_BASE_URL
   unset GENERATION_MODEL
+  unset SKILLSEED_USE_LIVE_STRIPE
+  unset STRIPE_SECRET_KEY
+  unset STRIPE_API_KEY
 
   echo "== tsc --noEmit =="
   npx tsc --noEmit
@@ -74,10 +77,25 @@ if [[ -f package.json ]]; then
 
   echo "== skillseed generate --help =="
   help_out="$(npx --no-install tsx src/cli.ts generate --help)"
-  printf '%s\n' "$help_out" | grep -q 'Usage: skillseed generate' \
+  printf '%s\n' "$help_out" | grep -q 'Usage: skillseed' \
     || fail "generate --help did not print usage"
+  printf '%s\n' "$help_out" | grep -q 'generate <openapi.yaml>' \
+    || fail "generate --help missing generate command"
+  printf '%s\n' "$help_out" | grep -q 'serve' \
+    || fail "generate --help missing serve command"
   printf '%s\n' "$help_out" | grep -qiE 'tiktok|reddit\.com|amazon' \
     && fail "help text must stay offline / vendor-free"
+
+  echo "== no live Stripe in default sources =="
+  if grep -R --include='*.ts' -nE 'sk_live_[A-Za-z0-9]{8,}' src tests; then
+    fail "live Stripe key leaked into sources"
+  fi
+  grep -q 'FakeStripePort' src/billing.ts || fail "missing FakeStripePort"
+  grep -q 'SKILLSEED_USE_LIVE_STRIPE' src/billing.ts || fail "live Stripe is not env-gated"
+  grep -q 'createCheckoutSession' src/billing.ts || fail "Stripe port missing checkout"
+  [[ -f src/web.ts ]] || fail "missing src/web.ts"
+  [[ -f src/jobs.ts ]] || fail "missing src/jobs.ts"
+  [[ -f tests/checkout.test.ts ]] || fail "missing tests/checkout.test.ts"
 
   echo "== invalid yaml exits non-zero =="
   invalid="$(mktemp "${TMPDIR:-/tmp}/skillseed-invalid.XXXXXX")"
@@ -228,6 +246,13 @@ YAML
   [[ "$nine_status" -eq 2 ]] || fail "9th tool exited $nine_status, expected 2"
   printf '%s\n' "$nine_out" | grep -qi 'error:' \
     || fail "9th tool did not print an error"
+
+  echo "== web checkout is \$29 with fake Stripe (offline) =="
+  grep -q 'GENERATE_PRICE_CENTS = 2900' src/billing.ts \
+    || fail "generate price is not \$29"
+  grep -q 'awaiting_payment' src/jobs.ts || fail "jobs missing awaiting_payment"
+  grep -q 'POST /jobs' SPEC.md || fail "SPEC missing POST /jobs"
+  grep -q 'PUBLIC_PRICE' src/web.ts || fail "web marketing missing public price"
 fi
 
 echo "OK: buildable and testable"

@@ -30,7 +30,8 @@ export type EmitOptions = {
 };
 
 export type GeneratePackInput = {
-  openapiPath: string;
+  openapiPath?: string;
+  openapiInline?: object;
   out?: string;
   allowTools?: string[];
   apiName?: string;
@@ -300,7 +301,7 @@ export async function writeZip(files: ArtifactFiles, zipPath: string): Promise<v
 }
 
 export async function generatePack(input: GeneratePackInput): Promise<GeneratePackResult> {
-  const loaded = await loadOpenApi(input.openapiPath);
+  const loaded = await loadOpenApi({ path: input.openapiPath, inline: input.openapiInline });
   const tools = selectTools(loaded.api, { allowTools: input.allowTools });
   const apiName = input.apiName?.trim() || apiTitle(loaded.api);
   const homepage = input.homepage?.trim() || apiHomepage(loaded.api);
