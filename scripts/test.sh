@@ -2,6 +2,7 @@
 # Offline gate for main. Must exit 0 on a clean clone with no secrets.
 # When application code lands, add unit/contract tests here. Do not delete the
 # contract checks. Do not require live third-party networks.
+# Operator live smoke is scripts/live-smoke.sh and is never invoked from here.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -253,6 +254,26 @@ YAML
   grep -q 'awaiting_payment' src/jobs.ts || fail "jobs missing awaiting_payment"
   grep -q 'POST /jobs' SPEC.md || fail "SPEC missing POST /jobs"
   grep -q 'PUBLIC_PRICE' src/web.ts || fail "web marketing missing public price"
+
+  echo "== live-smoke stays operator-only (offline) =="
+  [[ -f scripts/live-smoke.sh ]] || fail "missing scripts/live-smoke.sh"
+  [[ -x scripts/live-smoke.sh ]] || fail "scripts/live-smoke.sh must be executable"
+  [[ -f docs/live-smoke.md ]] || fail "missing docs/live-smoke.md"
+  if grep -nE 'live-smoke|SKILLSEED_USE_LIVE_STRIPE=1|STRIPE_SECRET_KEY=' .github/workflows/ci.yml >/dev/null; then
+    fail "CI must not run live-smoke or set live Stripe"
+  fi
+  grep -q 'BLOCKED-SECRET' scripts/live-smoke.sh \
+    || fail "live-smoke.sh must record BLOCKED-SECRET"
+  grep -q 'STRIPE_SECRET_KEY' scripts/live-smoke.sh \
+    || fail "live-smoke.sh must name STRIPE_SECRET_KEY"
+  grep -q 'hosted MCP stays out' scripts/live-smoke.sh \
+    || fail "live-smoke.sh must keep hosted MCP out"
+  grep -qE 'https?://' scripts/live-smoke.sh \
+    || fail "live-smoke.sh must fetch a live OpenAPI URL"
+  grep -q 'fixtures/clipapi.openapi.yaml' scripts/live-smoke.sh \
+    && fail "live-smoke.sh must not generate from the in-repo fixture path"
+  grep -q 'hostMcp: true' scripts/live-smoke.sh \
+    && fail "live-smoke.sh must not request hosted MCP"
 fi
 
 echo "OK: buildable and testable"

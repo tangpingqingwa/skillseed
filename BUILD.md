@@ -105,6 +105,12 @@ A sister API may not say “built for agents” unless its checked-in `SKILL.md`
 - **Dependencies:** PR 4
 - Stateless proxy, logs without bodies.
 
+### Follow-up: live smoke (operator only)
+- **Description:** `skillseed generate` on a live ClipAPI or RedditAPI OpenAPI URL (not only fixtures). Zip contains MCP + `SKILL.md`. `$29` Checkout live only if Stripe secret present, else `BLOCKED-SECRET` with the exact env var. Hosted MCP stays out.
+- **Files:** `scripts/live-smoke.sh`, `docs/live-smoke.md`, `scripts/test.sh`
+- **Dependencies:** PR 5
+- **Acceptance:** script is not called from `scripts/test.sh` or Actions. CI must not set live Stripe. Missing `STRIPE_SECRET_KEY` is `BLOCKED-SECRET`, not a fake charge.
+
 Internal launch = PR 3. External = PR 5.
 
 ---
