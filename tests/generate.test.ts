@@ -6,8 +6,9 @@ import { join } from "node:path";
 import { inflateRawSync } from "node:zlib";
 import { test } from "node:test";
 import { promisify } from "node:util";
-import { generatePack, renderStubSkill } from "../src/emit.js";
+import { generatePack } from "../src/emit.js";
 import { loadOpenApi, type OpenApiDocument } from "../src/load.js";
+import { FailingProsePort } from "../src/prose.js";
 import { GenerateError, selectTools } from "../src/tools.js";
 
 const execFileAsync = promisify(execFile);
@@ -127,12 +128,13 @@ test("clip fixture maps to <=8 tools with required query params", async () => {
   assert.equal(tools[0].inputSchema.additionalProperties, false);
 });
 
-test("clip generate writes zip with stub SKILL and MCP schemas", async () => {
+test("clip generate writes zip with reviewed SKILL and MCP schemas", async () => {
   const dir = await mkdtemp(join(tmpdir(), "skillseed-zip-"));
   const zipPath = join(dir, "clip.zip");
   const result = await generatePack({ openapiPath: fixture, out: zipPath });
   assert.equal(result.tools.length, 1);
   assert.equal(result.tools[0].name, "get_transcript");
+  assert.equal(result.skillSource, "prose");
 
   const files = zipMap(await readFile(zipPath));
   for (const name of [
@@ -170,11 +172,30 @@ test("clip generate writes zip with stub SKILL and MCP schemas", async () => {
 });
 
 test("LLM-down path still ships stub skill and intact tools", async () => {
-  const tools = selectTools((await loadOpenApi(fixture)).api);
-  const skill = await renderStubSkill(tools, { apiName: "ClipAPI" });
+  const dir = await mkdtemp(join(tmpdir(), "skillseed-llm-down-"));
+  const zipPath = join(dir, "clip.zip");
+  const result = await generatePack({
+    openapiPath: fixture,
+    out: zipPath,
+    prosePort: new FailingProsePort(),
+  });
+  assert.equal(result.skillSource, "stub");
+  assert.equal(result.tools[0].name, "get_transcript");
+  assert.equal(
+    result.tools[0].inputSchema.properties && (result.tools[0].inputSchema.properties as { url: unknown }).url !== undefined,
+    true,
+  );
+
+  const files = zipMap(await readFile(zipPath));
+  assert.ok(files.has("SKILL.md"));
+  assert.ok(files.has("mcp/server.json"));
+  const skill = files.get("SKILL.md")!;
   assert.match(skill, /# ClipAPI/);
   assert.match(skill, /get_transcript/);
-  assert.equal(tools[0].inputSchema.properties && (tools[0].inputSchema.properties as { url: unknown }).url !== undefined, true);
+  assert.doesNotMatch(skill, /\{\{API_NAME\}\}/);
+  const server = JSON.parse(files.get("mcp/server.json")!);
+  assert.equal(server.tools[0].name, "get_transcript");
+  assert.deepEqual(server.tools[0].inputSchema.required, ["url"]);
 });
 
 test("9th tool is rejected with exit 2", async () => {

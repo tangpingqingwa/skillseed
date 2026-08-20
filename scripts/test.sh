@@ -47,6 +47,12 @@ if [[ -f package.json ]]; then
     fi
   fi
 
+  # Live ProsePort is env-gated and must never run in this script.
+  unset SKILLSEED_USE_LIVE_PROSE
+  unset SKILLSEED_LLM_API_KEY
+  unset SKILLSEED_LLM_BASE_URL
+  unset GENERATION_MODEL
+
   echo "== tsc --noEmit =="
   npx tsc --noEmit
 
@@ -87,6 +93,9 @@ if [[ -f package.json ]]; then
 
   echo "== generate clip fixture zip (offline) =="
   [[ -f src/templates/skill.stub.md ]] || fail "missing stub skill template"
+  for dir_tpl in cursor claude openclaw chatgpt; do
+    [[ -f "templates/directories/${dir_tpl}.md" ]] || fail "missing templates/directories/${dir_tpl}.md"
+  done
   gen_dir="$(mktemp -d "${TMPDIR:-/tmp}/skillseed-gen.XXXXXX")"
   set +e
   gen_out="$(npx --no-install tsx src/cli.ts generate fixtures/clipapi.openapi.yaml --out "$gen_dir/pack.zip" 2>&1)"
@@ -100,18 +109,55 @@ if [[ -f package.json ]]; then
 import sys, zipfile
 z = zipfile.ZipFile(sys.argv[1])
 names = set(z.namelist())
-need = {"SKILL.md", "mcp/server.json", "mcp/index.js"}
+need = {
+    "SKILL.md",
+    "mcp/server.json",
+    "mcp/index.js",
+    "directories/cursor.md",
+    "directories/claude.md",
+    "directories/openclaw.md",
+    "directories/chatgpt.md",
+}
 missing = need - names
 if missing:
     raise SystemExit("missing " + ", ".join(sorted(missing)))
 skill = z.read("SKILL.md").decode()
 server = z.read("mcp/server.json").decode()
 if "get_transcript" not in skill or "get_transcript" not in server:
-    raise SystemExit("tools not present in stub skill / server.json")
+    raise SystemExit("tools not present in skill / server.json")
 if "{{API_NAME}}" in skill or "{{TOOLS_TABLE}}" in skill:
-    raise SystemExit("stub template placeholders left unfilled")
+    raise SystemExit("template placeholders left unfilled")
+cursor = z.read("directories/cursor.md").decode()
+if "**Human must click submit**" not in cursor:
+    raise SystemExit("directory draft missing human-submit line")
+if "{{SUGGESTED_NAME}}" in cursor:
+    raise SystemExit("directory placeholders left unfilled")
 PY
   rm -rf "$gen_dir"
+
+  echo "== LLM-down still zips stub skill (offline) =="
+  llm_dir="$(mktemp -d "${TMPDIR:-/tmp}/skillseed-llm.XXXXXX")"
+  set +e
+  llm_out="$(SKILLSEED_PROSE_FAIL=1 npx --no-install tsx src/cli.ts generate fixtures/clipapi.openapi.yaml --out "$llm_dir/pack.zip" 2>&1)"
+  llm_status=$?
+  set -e
+  [[ "$llm_status" -eq 0 ]] || fail "LLM-down generate failed: $llm_out"
+  [[ -f "$llm_dir/pack.zip" ]] || fail "LLM-down did not write a zip"
+  python3 - "$llm_dir/pack.zip" <<'PY' || fail "LLM-down zip missing stub skill or tools"
+import sys, zipfile, json
+z = zipfile.ZipFile(sys.argv[1])
+skill = z.read("SKILL.md").decode()
+server = json.loads(z.read("mcp/server.json").decode())
+if "get_transcript" not in skill:
+    raise SystemExit("stub skill missing get_transcript")
+if "{{API_NAME}}" in skill:
+    raise SystemExit("stub placeholders left")
+if server["tools"][0]["name"] != "get_transcript":
+    raise SystemExit("tools not intact")
+if "url" not in server["tools"][0]["inputSchema"].get("required", []):
+    raise SystemExit("schema not intact")
+PY
+  rm -rf "$llm_dir"
 
   echo "== generate reddit fixture zip (offline) =="
   reddit_dir="$(mktemp -d "${TMPDIR:-/tmp}/skillseed-reddit.XXXXXX")"
@@ -141,6 +187,9 @@ if "unroll_thread" not in skill or "get_transcript" in skill:
     raise SystemExit("skill is not the RedditAPI pack")
 if "get_transcript" in z.read("mcp/index.js").decode():
     raise SystemExit("generated client still mentions get_transcript")
+cursor = z.read("directories/cursor.md").decode()
+if "**Human must click submit**" not in cursor or "RedditAPI" not in cursor:
+    raise SystemExit("reddit directory draft incomplete")
 PY
   rm -rf "$reddit_dir"
 
